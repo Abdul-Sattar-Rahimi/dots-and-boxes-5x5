@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>نقطه و خط 5×5 (Perfect AI)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>بازی نقطه و خط — 5×5 نقطه (4×4 مربع)</h1>
+
+    <section class="panel">
+      <div class="controls">
+        <div class="group">
+          <div class="label">شروع‌کننده:</div>
+          <label><input type="radio" name="starter" value="human" checked> من</label>
+          <label><input type="radio" name="starter" value="ai"> AI</label>
+        </div>
+
+        <button id="newGame">شروع بازی جدید</button>
+      </div>
+
+      <div class="status">
+        <div>نوبت: <b id="turnLabel">—</b></div>
+        <div>امتیاز من: <b id="humanScore">0</b></div>
+        <div>امتیاز AI: <b id="aiScore">0</b></div>
+        <div class="small" id="thinking"></div>
+      </div>
+    </section>
+
+    <section class="board">
+      <svg id="svg" viewBox="0 0 520 520" aria-label="Dots and Boxes Board"></svg>
+    </section>
+
+    <section class="hint">
+      <p>
+        راهنما: روی خط‌های خاکستری کلیک کن. اگر با کشیدن یک خط «مربع کامل شود»، همان بازیکن دوباره بازی می‌کند.
+      </p>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
