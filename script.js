@@ -7,10 +7,6 @@
   const E = H + V; // total edges = 40
   const B = BOX * BOX; // total boxes = 16
 
-  // Edge indexing:
-  // horizontal edge at (r,c): r in [0..N-1], c in [0..N-2] => idx = r*(N-1)+c   (0..H-1)
-  // vertical edge at (r,c): r in [0..N-2], c in [0..N-1] => idx = H + r*N + c   (H..E-1)
-
   const svg = document.getElementById('svg');
   const turnLabel = document.getElementById('turnLabel');
   const humanScoreEl = document.getElementById('humanScore');
@@ -20,7 +16,6 @@
 
   // -------- Precompute box -> 4 edges
   const boxEdges = new Array(B).fill(null).map(() => []);
-  const boxRowCol = (b) => [Math.floor(b / BOX), b % BOX];
 
   function hEdgeIndex(r, c) { return r * (N - 1) + c; }
   function vEdgeIndex(r, c) { return H + r * N + c; }
@@ -81,7 +76,7 @@
     return popcount16(ownerHuman | ownerAI) === B;
   }
 
-  // Apply move returns: { newMask, newOwnerAI, newOwnerHuman, nextTurn, gainedAI, gainedHuman }
+  // Apply move returns: { newMask, newOAI, newOH, nextTurn, gained }
   function applyMove(mask, oAI, oH, currentTurn, edgeIdx) {
     if (hasEdge(mask, edgeIdx)) return null;
 
@@ -92,7 +87,6 @@
 
     const adj = edgeToBoxes[edgeIdx];
     for (const b of adj) {
-      // if box is complete and unowned now -> it gets claimed
       const owned = ((newOAI | newOH) >> b) & 1;
       if (!owned && boxComplete(newMask, b)) {
         gained++;
@@ -105,87 +99,24 @@
     return { newMask, newOAI, newOH, nextTurn, gained };
   }
 
-  // -------- Perfect-play AI: minimax over full remaining game with memo + alpha-beta
-  // returns value = (aiScore - humanScore) from this state until end, assuming optimal play
-  const memo = new Map();
+  // ---------------- Web Worker (AI)
+  // IMPORTANT: create worker once
+  let worker = null;
+  function ensureWorker() {
+    if (worker) return worker;
 
-  function key(mask, oAI, oH, currentTurn) {
-    // mask as string is OK for 5x5
-    return mask.toString() + '|' + oAI + '|' + oH + '|' + (currentTurn === 'ai' ? 'A' : 'H');
-  }
-
-  function minimax(mask, oAI, oH, currentTurn, alpha, beta) {
-    const k = key(mask, oAI, oH, currentTurn);
-    const cached = memo.get(k);
-    if (cached !== undefined) return cached;
-
-    // terminal
-    const claimed = popcount16(oAI | oH);
-    if (claimed === B) {
-      const v = popcount16(oAI) - popcount16(oH);
-      memo.set(k, v);
-      return v;
+    try {
+      worker = new Worker('worker.js');
+    } catch (e) {
+      console.error(e);
+      thinkingEl.textContent = 'خطا: فایل worker.js پیدا نشد یا مرورگر Worker را پشتیبانی نمی‌کند.';
+      return null;
     }
-
-    // move ordering: try "box-closing" moves first
-    const moves = [];
-    for (let e = 0; e < E; e++) if (!hasEdge(mask, e)) moves.push(e);
-
-    moves.sort((a, b) => {
-      // heuristic: edges that complete boxes first
-      const ga = wouldGain(mask, oAI, oH, currentTurn, a);
-      const gb = wouldGain(mask, oAI, oH, currentTurn, b);
-      return gb - ga;
-    });
-
-    let best;
-    if (currentTurn === 'ai') {
-      best = -Infinity;
-      for (const e of moves) {
-        const res = applyMove(mask, oAI, oH, currentTurn, e);
-        const val = minimax(res.newMask, res.newOAI, res.newOH, res.nextTurn, alpha, beta);
-        if (val > best) best = val;
-        if (best > alpha) alpha = best;
-        if (alpha >= beta) break; // prune
-      }
-    } else {
-      best = Infinity;
-      for (const e of moves) {
-        const res = applyMove(mask, oAI, oH, currentTurn, e);
-        const val = minimax(res.newMask, res.newOAI, res.newOH, res.nextTurn, alpha, beta);
-        if (val < best) best = val;
-        if (best < beta) beta = best;
-        if (alpha >= beta) break; // prune
-      }
-    }
-
-    memo.set(k, best);
-    return best;
+    return worker;
   }
 
-  function wouldGain(mask, oAI, oH, currentTurn, edgeIdx) {
-    const res = applyMove(mask, oAI, oH, currentTurn, edgeIdx);
-    return res ? res.gained : 0;
-  }
-
-  function bestMoveForAI() {
-    let bestE = -1;
-    let bestV = -Infinity;
-
-    // Same ordering heuristic
-    const moves = [];
-    for (let e = 0; e < E; e++) if (!hasEdge(edgesMask, e)) moves.push(e);
-    moves.sort((a, b) => wouldGain(edgesMask, ownerAI, ownerHuman, 'ai', b) - wouldGain(edgesMask, ownerAI, ownerHuman, 'ai', a));
-
-    let alpha = -Infinity, beta = Infinity;
-    for (const e of moves) {
-      const res = applyMove(edgesMask, ownerAI, ownerHuman, 'ai', e);
-      const v = minimax(res.newMask, res.newOAI, res.newOH, res.nextTurn, alpha, beta);
-      if (v > bestV) { bestV = v; bestE = e; }
-      if (bestV > alpha) alpha = bestV;
-    }
-    return bestE;
-  }
+  // Cancel/ignore stale AI responses (when user restarts game mid-think)
+  let aiRequestId = 0;
 
   // -------- UI rendering
   function clearSVG() {
@@ -292,10 +223,6 @@
       const ln = edgeLines[e];
       ln.classList.remove('taken-human', 'taken-ai');
       if (hasEdge(edgesMask, e)) {
-        // edge owner color is not tracked; we approximate by last mover is not stored.
-        // visual: mark based on whether edge helped claim boxes for someone at claim time not tracked here
-        // We'll color by "who took the turn when it was clicked" during gameplay:
-        // stored in ln.dataset.owner
         const own = ln.dataset.owner;
         ln.classList.add(own === 'ai' ? 'taken-ai' : 'taken-human');
       }
@@ -337,15 +264,34 @@
   }
 
   function aiTurn() {
+    if (gameOver()) return;
+
+    const w = ensureWorker();
+    if (!w) return;
+
     thinkingEl.textContent = 'AI در حال فکر کردن…';
     render();
 
-    // let UI paint first
-    setTimeout(() => {
-      const move = bestMoveForAI();
-      if (move < 0) { thinkingEl.textContent = ''; return; }
+    const myReq = ++aiRequestId;
+
+    // one-time handler (we don't want to stack handlers)
+    w.onmessage = (ev) => {
+      if (myReq !== aiRequestId) return; // stale
+      const move = ev.data && typeof ev.data.move === 'number' ? ev.data.move : -1;
+
+      if (move < 0 || hasEdge(edgesMask, move) || gameOver() || turn !== 'ai') {
+        thinkingEl.textContent = '';
+        render();
+        return;
+      }
 
       const res = applyMove(edgesMask, ownerAI, ownerHuman, 'ai', move);
+      if (!res) {
+        thinkingEl.textContent = '';
+        render();
+        return;
+      }
+
       edgesMask = res.newMask;
       ownerAI = res.newOAI;
       ownerHuman = res.newOH;
@@ -356,14 +302,23 @@
       render();
 
       if (turn === 'ai' && !gameOver()) aiTurn();
-    }, 30);
+    };
+
+    // send state (mask as string so worker can BigInt it safely)
+    w.postMessage({
+      mask: edgesMask.toString(),
+      oAI: ownerAI | 0,
+      oH: ownerHuman | 0
+    });
   }
 
   function resetGame() {
+    // invalidate any in-flight AI work
+    aiRequestId++;
+
     edgesMask = 0n;
     ownerAI = 0;
     ownerHuman = 0;
-    memo.clear();
     thinkingEl.textContent = '';
 
     // clear edge owner paint
